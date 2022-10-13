@@ -1,0 +1,9 @@
+﻿A       apis/Echo API/Original/1/apiInformation.json
+A       apis/Echo API/Original/1/operations/Create resource/policy.xml
+A       apis/Echo API/Original/1/operations/Retrieve header only/policy.xml
+A       apis/Echo API/Original/1/operations/Retrieve resource (cached)/policy.xml
+A       apis/Echo API/Original/1/specification.yaml
+M       apis/demo-conference-api/Original/1/specification.yaml
+A       named values/test-named-value/namedValueInformation.json
+A       products/Test/apis.json
+A       products/Unlimited/apis.json

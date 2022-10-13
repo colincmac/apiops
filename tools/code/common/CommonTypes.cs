@@ -33,7 +33,7 @@ public abstract record UriRecord
 
     protected UriRecord(Uri value)
     {
-        this.value = (value.ToString());
+        this.value = value.ToString();
     }
 
     public override string ToString() => value;
@@ -85,8 +85,8 @@ public abstract record FileRecord
     {
         CreateDirectoryIfNotExists();
 
-        using var stream = FileInfo.Open(FileMode.Create);
-        var options = new JsonSerializerOptions { WriteIndented = true };
+        using FileStream stream = FileInfo.Open(FileMode.Create);
+        JsonSerializerOptions options = new() { WriteIndented = true };
 
         await JsonSerializer.SerializeAsync(stream, json, options, cancellationToken);
     }
@@ -102,21 +102,21 @@ public abstract record FileRecord
     {
         CreateDirectoryIfNotExists();
 
-        using var fileStream = FileInfo.Open(FileMode.Create);
+        using FileStream fileStream = FileInfo.Open(FileMode.Create);
 
         await stream.CopyToAsync(fileStream, cancellationToken);
     }
 
     private JsonNode ReadAsJsonNode()
     {
-        using var stream = FileInfo.OpenRead();
-        var options = new JsonNodeOptions { PropertyNameCaseInsensitive = true };
+        using FileStream stream = FileInfo.OpenRead();
+        JsonNodeOptions options = new() { PropertyNameCaseInsensitive = true };
         return JsonNode.Parse(stream, options) ?? throw new InvalidOperationException($"Could not read JSON from file ${Path}.");
     }
 
     private void CreateDirectoryIfNotExists()
     {
-        var directory = GetDirectoryInfo();
+        DirectoryInfo directory = GetDirectoryInfo();
 
         directory.Create();
     }

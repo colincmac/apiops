@@ -9,6 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\ApiOps.Core\ApiOps.Core.csproj" />
     <ProjectReference Include="..\common\common.csproj" />
   </ItemGroup>
 
@@ -19,6 +20,7 @@
     <PackageReference Include="Microsoft.Extensions.Http.Polly" Version="6.0.6" />
     <PackageReference Include="NetEscapades.Configuration.Yaml" Version="2.2.0" />
     <PackageReference Include="Polly.Contrib.WaitAndRetry" Version="1.1.1" />
+	<PackageReference Include="Azure.ResourceManager.ApiManagement" Version="1.0.0" />
   </ItemGroup>
 
   <ItemGroup>

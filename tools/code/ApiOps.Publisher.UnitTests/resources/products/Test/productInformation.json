@@ -1,0 +1,10 @@
+{
+  "name": "test",
+  "properties": {
+    "displayName": "Test",
+    "approvalRequired": false,
+    "description": "ssds",
+    "state": "published",
+    "subscriptionRequired": true
+  }
+}

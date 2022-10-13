@@ -5,7 +5,10 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
+
+[assembly: InternalsVisibleTo("ApiOps.Publisher.UnitTests")]
 
 namespace publisher;
 
@@ -80,7 +83,7 @@ internal static class Git
             : throw new InvalidOperationException($"Failed to get files for commit {commitId} in directory {baseDirectory}. Error message is '{commandResult.StandardError}'.");
     }
 
-    private static IEnumerable<IGrouping<CommitStatus, FileInfo>> ParseDiffTreeOutput(string output, DirectoryInfo baseDirectory)
+    public static IEnumerable<IGrouping<CommitStatus, FileInfo>> ParseDiffTreeOutput(string output, DirectoryInfo baseDirectory)
     {
         var getFileFromOutputLine = (string outputLine) => new FileInfo(Path.Combine(baseDirectory.FullName, outputLine[1..].Trim()));
 
