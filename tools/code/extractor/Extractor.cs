@@ -1,4 +1,6 @@
 ﻿using ApiOps.Core;
+using Azure;
+using Azure.Core;
 using Azure.Identity;
 using Azure.ResourceManager;
 using Azure.ResourceManager.ApiManagement;
@@ -23,9 +25,7 @@ internal class Extractor : BackgroundService
     private readonly IHostApplicationLifetime applicationLifetime;
     private readonly ILogger logger;
     private readonly NonAuthenticatedHttpClient nonAuthenticatedHttpClient;
-    private readonly Func<Uri, CancellationToken, ValueTask<JsonObject?>> tryGetResource;
     private readonly Func<Uri, CancellationToken, ValueTask<JsonObject>> getResource;
-    private readonly Func<Uri, CancellationToken, IAsyncEnumerable<JsonObject>> getResources;
     private readonly ServiceDirectory serviceDirectory;
     private readonly ServiceProviderUri serviceProviderUri;
     private readonly ServiceName serviceName;
@@ -33,6 +33,7 @@ internal class Extractor : BackgroundService
     private readonly ConfigurationModel configurationModel;
     private readonly IConfiguration _configuration;
     private readonly ApiManagementServiceResource _apimResource;
+    private readonly ArmClient _armClient;
     private static readonly JsonSerializerOptions serializerOptions = new()
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
@@ -44,15 +45,14 @@ internal class Extractor : BackgroundService
         this.applicationLifetime = applicationLifetime;
         this.logger = logger;
         this.nonAuthenticatedHttpClient = nonAuthenticatedHttpClient;
-        this.tryGetResource = azureHttpClient.TryGetResourceAsJsonObject;
         this.getResource = azureHttpClient.GetResourceAsJsonObject;
-        this.getResources = azureHttpClient.GetResourcesAsJsonObjects;
         this.serviceDirectory = GetServiceDirectory(configuration);
         this.serviceProviderUri = GetServiceProviderUri(configuration, azureHttpClient);
         this.serviceName = GetServiceName(configuration);
         this.apiSpecification = GetApiSpecification(configuration);
         this.configurationModel = configuration.Get<ConfigurationModel>();
         this._configuration = configuration;
+        _armClient = new(new DefaultAzureCredential());
         _apimResource = GetApimServiceResource();
     }
 
@@ -62,8 +62,7 @@ internal class Extractor : BackgroundService
         string resourceGroupName = _configuration.GetValue("AZURE_RESOURCE_GROUP_NAME");
         string serviceName = _configuration.TryGetValue("API_MANAGEMENT_SERVICE_NAME") ?? _configuration.GetValue("apimServiceName");
 
-        ArmClient armClient = new(new DefaultAzureCredential());
-        return armClient.GetApiManagementServiceResource(ApiManagementServiceResource.CreateResourceIdentifier(subscriptionId, resourceGroupName, serviceName));
+        return _armClient.GetApiManagementServiceResource(ApiManagementServiceResource.CreateResourceIdentifier(subscriptionId, resourceGroupName, serviceName));
     }
 
     private static ServiceDirectory GetServiceDirectory(IConfiguration configuration) =>
@@ -284,18 +283,26 @@ internal class Extractor : BackgroundService
 
     private async ValueTask ExportProductPolicy(ApiManagementProductResource product, CancellationToken cancellationToken)
     {
-        Azure.Response<ApiManagementProductPolicyResource> policy = await product.GetApiManagementProductPolicyAsync(ApiManagementHelpers.DefaultGlobalPolicyName, PolicyExportFormat.Xml, cancellationToken);
 
-        if (policy.Value.HasData && policy.Value.Data.Value is string policyText)
+        try
         {
-            logger.LogInformation("Exporting policy for product {productName}...", product.Data.Name);
+            Azure.Response<ApiManagementProductPolicyResource> policy = await product.GetApiManagementProductPolicyAsync(ApiManagementHelpers.DefaultGlobalPolicyName, PolicyExportFormat.Xml, cancellationToken);
 
-            ProductsDirectory productsDirectory = ProductsDirectory.From(serviceDirectory);
-            ProductDisplayName productDisplayName = ProductDisplayName.From(product.Data.DisplayName);
-            ProductDirectory productDirectory = ProductDirectory.From(productsDirectory, productDisplayName);
-            ProductPolicyFile file = ProductPolicyFile.From(productDirectory);
+            if (policy.Value.HasData && policy.Value.Data.Value is string policyText)
+            {
+                logger.LogInformation("Exporting policy for product {productName}...", product.Data.Name);
 
-            await file.OverwriteWithText(policyText, cancellationToken);
+                ProductsDirectory productsDirectory = ProductsDirectory.From(serviceDirectory);
+                ProductDisplayName productDisplayName = ProductDisplayName.From(product.Data.DisplayName);
+                ProductDirectory productDirectory = ProductDirectory.From(productsDirectory, productDisplayName);
+                ProductPolicyFile file = ProductPolicyFile.From(productDirectory);
+
+                await file.OverwriteWithText(policyText, cancellationToken);
+            }
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            // Do nothing. There is no default policy resource for Products's
         }
     }
 
@@ -372,7 +379,6 @@ internal class Extractor : BackgroundService
     {
         Azure.AsyncPageable<ApiResource> apis = _apimResource.GetApis()
             .GetAllAsync(cancellationToken: cancellationToken);
-
         await Parallel.ForEachAsync(apis, cancellationToken, ExportApi);
     }
 
@@ -388,7 +394,6 @@ internal class Extractor : BackgroundService
     private async ValueTask ExportApiInformation(ApiResource api, CancellationToken cancellationToken)
     {
         logger.LogInformation("Exporting information for api {apiName}...", api.Data.Name);
-
         ApisDirectory apisDirectory = ApisDirectory.From(serviceDirectory);
         ApiDisplayName apiDisplayName = ApiDisplayName.From(api.Data.DisplayName);
         ApiVersion apiVersion = ApiVersion.From(api.Data.ApiVersion);
@@ -403,41 +408,46 @@ internal class Extractor : BackgroundService
 
     private async ValueTask ExportApiPolicy(ApiResource api, CancellationToken cancellationToken)
     {
-        Azure.Response<ApiPolicyResource> policy = await api.GetApiPolicyAsync(ApiManagementHelpers.DefaultGlobalPolicyName, PolicyExportFormat.Xml, cancellationToken);
-
-        if (policy.Value.HasData && policy.Value.Data.Value is string policyText)
+        try
         {
-            logger.LogInformation("Exporting policy for api {apiName}...", api.Data.Name);
+            Response<ApiPolicyResource> policy = await api.GetApiPolicyAsync(ApiManagementHelpers.DefaultGlobalPolicyName, PolicyExportFormat.Xml, cancellationToken);
 
-            ApisDirectory apisDirectory = ApisDirectory.From(serviceDirectory);
-            ApiDisplayName apiDisplayName = ApiDisplayName.From(api.Data.DisplayName);
-            ApiVersion apiVersion = ApiVersion.From(api.Data.ApiVersion);
-            ApiRevision apiRevision = ApiRevision.From(api.Data.ApiRevision);
-            ApiDirectory apiDirectory = ApiDirectory.From(apisDirectory, apiDisplayName, apiVersion, apiRevision);
-            ApiPolicyFile file = ApiPolicyFile.From(apiDirectory);
+            if (policy.Value.HasData && policy.Value.Data.Value is string policyText)
+            {
+                logger.LogInformation("Exporting policy for api {apiName}...", api.Data.Name);
 
-            await file.OverwriteWithText(policyText, cancellationToken);
+                ApisDirectory apisDirectory = ApisDirectory.From(serviceDirectory);
+                ApiDisplayName apiDisplayName = ApiDisplayName.From(api.Data.DisplayName);
+                ApiVersion apiVersion = ApiVersion.From(api.Data.ApiVersion);
+                ApiRevision apiRevision = ApiRevision.From(api.Data.ApiRevision);
+                ApiDirectory apiDirectory = ApiDirectory.From(apisDirectory, apiDisplayName, apiVersion, apiRevision);
+                ApiPolicyFile file = ApiPolicyFile.From(apiDirectory);
+
+                await file.OverwriteWithText(policyText, cancellationToken);
+            }
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            // Do nothing. There is no default policy resource for API's
         }
     }
 
+    // the new Azure Resource Manager doesn't support the query to get a specification download string => https://github.com/Azure/azure-sdk-for-net/issues/31798
     private async ValueTask ExportApiSpecification(ApiResource api, CancellationToken cancellationToken)
     {
         logger.LogInformation("Exporting specification for api {apiName}...", api.Data.Name);
-        ApiSchemaResource? schema = await api.GetApiSchemas().FirstOrDefaultAsync(cancellationToken);
-        if (schema is null) throw new InvalidOperationException($"Could not fetch specification for api {api.Data.DisplayName}.");
+
         ApisDirectory apisDirectory = ApisDirectory.From(serviceDirectory);
         ApiDisplayName apiDisplayName = ApiDisplayName.From(api.Data.DisplayName);
         ApiVersion apiVersion = ApiVersion.From(api.Data.ApiVersion);
         ApiRevision apiRevision = ApiRevision.From(api.Data.ApiRevision);
         ApiDirectory apiDirectory = ApiDirectory.From(apisDirectory, apiDisplayName, apiVersion, apiRevision);
         ApiSpecificationFile file = ApiSpecificationFile.From(apiDirectory, apiSpecification);
+        ApiName apiName = ApiName.From(api.Data.Name);
+        Func<Uri, CancellationToken, ValueTask<System.IO.Stream>> downloader = nonAuthenticatedHttpClient.GetSuccessfulResponseStream;
+        using System.IO.Stream specificationStream = await ApiSpecification.Get(getResource, downloader, serviceProviderUri, serviceName, apiName, apiSpecification, cancellationToken);
 
-        //ApiName apiName = ApiName.From(api.Data.Name);
-        //Func<Uri, CancellationToken, ValueTask<System.IO.Stream>> downloader = nonAuthenticatedHttpClient.GetSuccessfulResponseStream;
-        //using System.IO.Stream specificationStream = await ApiSpecification.Get(getResource, downloader, serviceProviderUri, serviceName, apiName, apiSpecification, cancellationToken);
-        using System.IO.Stream specStream = schema.Data.Components.ToStream();
-
-        await file.OverwriteWithStream(specStream, cancellationToken);
+        await file.OverwriteWithStream(specificationStream, cancellationToken);
     }
 
     private async ValueTask ExportApiDiagnostics(ApiResource api, CancellationToken cancellationToken)
@@ -485,23 +495,30 @@ internal class Extractor : BackgroundService
 
     private async ValueTask ExportApiOperationPolicy(ApiResource api, ApiOperationResource apiOperation, CancellationToken cancellationToken)
     {
-        Azure.Response<ApiPolicyResource> policy = await api.GetApiPolicyAsync(ApiManagementHelpers.DefaultGlobalPolicyName, PolicyExportFormat.Xml, cancellationToken);
-
-        if (policy.Value.HasData && policy.Value.Data.Value is string policyText)
+        try
         {
-            logger.LogInformation("Exporting policy for apiOperation {apiOperationName} in api {apiName}...", apiOperation.Data.Name, api.Data.Name);
+            Azure.Response<ApiPolicyResource> policy = await api.GetApiPolicyAsync(ApiManagementHelpers.DefaultGlobalPolicyName, PolicyExportFormat.Xml, cancellationToken);
 
-            ApisDirectory apisDirectory = ApisDirectory.From(serviceDirectory);
-            ApiDisplayName apiDisplayName = ApiDisplayName.From(api.Data.DisplayName);
-            ApiVersion apiVersion = ApiVersion.From(api.Data.ApiVersion);
-            ApiRevision apiRevision = ApiRevision.From(api.Data.ApiRevision);
-            ApiDirectory apiDirectory = ApiDirectory.From(apisDirectory, apiDisplayName, apiVersion, apiRevision);
-            ApiOperationsDirectory apiOperationsDirectory = ApiOperationsDirectory.From(apiDirectory);
-            ApiOperationDisplayName apiOperationDisplayName = ApiOperationDisplayName.From(apiOperation.Data.DisplayName);
-            ApiOperationDirectory apiOperationDirectory = ApiOperationDirectory.From(apiOperationsDirectory, apiOperationDisplayName);
-            ApiOperationPolicyFile file = ApiOperationPolicyFile.From(apiOperationDirectory);
+            if (policy.Value.HasData && policy.Value.Data.Value is string policyText)
+            {
+                logger.LogInformation("Exporting policy for apiOperation {apiOperationName} in api {apiName}...", apiOperation.Data.Name, api.Data.Name);
 
-            await file.OverwriteWithText(policyText, cancellationToken);
+                ApisDirectory apisDirectory = ApisDirectory.From(serviceDirectory);
+                ApiDisplayName apiDisplayName = ApiDisplayName.From(api.Data.DisplayName);
+                ApiVersion apiVersion = ApiVersion.From(api.Data.ApiVersion);
+                ApiRevision apiRevision = ApiRevision.From(api.Data.ApiRevision);
+                ApiDirectory apiDirectory = ApiDirectory.From(apisDirectory, apiDisplayName, apiVersion, apiRevision);
+                ApiOperationsDirectory apiOperationsDirectory = ApiOperationsDirectory.From(apiDirectory);
+                ApiOperationDisplayName apiOperationDisplayName = ApiOperationDisplayName.From(apiOperation.Data.DisplayName);
+                ApiOperationDirectory apiOperationDirectory = ApiOperationDirectory.From(apiOperationsDirectory, apiOperationDisplayName);
+                ApiOperationPolicyFile file = ApiOperationPolicyFile.From(apiOperationDirectory);
+
+                await file.OverwriteWithText(policyText, cancellationToken);
+            }
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            // Do nothing. There is no default policy resource for API Operations's
         }
     }
 }
